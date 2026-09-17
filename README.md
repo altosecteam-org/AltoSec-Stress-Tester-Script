@@ -1,21 +1,24 @@
 # AltoSec Stress Tester — Server Setup Script
 
-> **One command** to provision any Linux server: installs Docker, deploys the application, and registers a GitHub Actions self-hosted runner so every merge to `main` automatically redeploys.
+> **One command** to provision any Linux server: installs Docker, registers a GitHub Actions self-hosted runner, and connects it to the main repo so every merge to `main` automatically deploys.
+
+Environment variables are stored as **GitHub Secrets** — no `.env` file is kept on disk. The workflow writes a fresh `.env` from secrets on every deploy.
 
 ---
 
 ## How It Works
 
 ```
-Your Laptop                GitHub                  Your Server
-──────────               ──────────               ──────────────
- git push main  ──────►  workflow triggers  ──►  self-hosted runner
-                                                  runs deploy.sh
-                                                  docker compose up
+Your Laptop                GitHub                     Your Server
+──────────               ──────────                  ──────────────
+ git push main  ──────►  workflow triggers  ──────►  self-hosted runner
+                          writes .env                 from GitHub Secrets
+                                                      docker compose up
 ```
 
-1. **`setup.sh`** — run once on a new server; it installs Docker, clones the app, writes `.env`, does the first deploy, and registers this server as a GitHub Actions runner.
-2. **GitHub Actions workflow** (`production.yml` in the main repo) — on every push to `main`, the workflow is dispatched and the registered runner pulls the latest code and rebuilds the containers.
+1. **`setup.sh`** — run **once** on a new server to install Docker and register the server as a GitHub Actions self-hosted runner.
+2. **GitHub Secrets** — store all environment variables (DB password, JWT secret, ports) in the repo. No secrets on disk.
+3. **GitHub Actions workflow** (`production.yml`) — on every push to `main`, writes `.env` from secrets, then rebuilds and restarts containers.
 
 ---
 
@@ -24,133 +27,113 @@ Your Laptop                GitHub                  Your Server
 | Requirement | Notes |
 |---|---|
 | Ubuntu 20.04 / 22.04 / 24.04 (amd64 or arm64) | Debian-based distros also work |
-| Root access (or `sudo`) | Required for Docker install and systemd registration |
+| Root access | Required for Docker install and systemd registration |
 | Outbound internet access | To download Docker and the runner binary |
-| A GitHub Actions **runner registration token** | See [How to get a token](#how-to-get-a-runner-registration-token) |
+| A GitHub Actions **runner registration token** | See step 1 below |
 
 ---
 
-## Quick Start
+## Setup (3 steps)
 
-### 1. Get a runner registration token
+### Step 1 — Run setup.sh on the server
 
-1. Go to the **main repo** → **Settings** → **Actions** → **Runners**
-2. Click **New self-hosted runner**
-3. Copy the token shown in the `--token` line (looks like `ABCDEFGH1234...`, valid for **1 hour**)
+Get a runner registration token first:
+> GitHub → main repo → **Settings** → **Actions** → **Runners** → **New self-hosted runner** → copy the `--token` value (valid for 1 hour)
 
-### 2. Run setup.sh on the server
-
-SSH into your server, then run:
+SSH into the server and run:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/altosecteam-org/AltoSec-Stress-Tester-Script/main/setup.sh \
-  | sudo bash -s -- \
-      --domain YOUR_SERVER_IP_OR_DOMAIN \
-      --runner-token YOUR_REGISTRATION_TOKEN
+  | sudo bash -s -- --runner-token YOUR_REGISTRATION_TOKEN
 ```
 
-That's it. The script will:
-- Install `git`, `curl`, `jq`, `openssl`
-- Install **Docker** (via `get.docker.com`)
-- Clone the main application repo to `/opt/altosec`
-- Generate a random DB password and JWT secret, write `/opt/altosec/.env`
-- Run `docker compose -f docker-compose.prod.yml up -d --build` (first deploy)
-- Download, configure, and register the GitHub Actions runner
-- Install the runner as a **systemd service** (auto-starts on reboot)
+The script installs Docker, clones the app repo to `/opt/altosec`, and registers this server as a GitHub Actions self-hosted runner (systemd service, starts on reboot).
 
-### 3. Verify
+### Step 2 — Add GitHub Secrets
 
-Open GitHub → repo → **Settings** → **Actions** → **Runners**.  
-Your server should appear with a green **Idle** badge.
+Go to: **GitHub → main repo → Settings → Secrets and variables → Actions → New repository secret**
 
+Add these 5 secrets:
+
+| Secret name | Example value | Description |
+|---|---|---|
+| `SERVER_DOMAIN` | `192.74.225.3` | Server IP or domain |
+| `BACKEND_PORT` | `8080` | Backend API port |
+| `FRONTEND_PORT` | `3000` | Frontend HTTP port |
+| `DB_PASSWORD` | *(random strong password)* | PostgreSQL password |
+| `JWT_SECRET` | *(random 32+ char string)* | JWT signing key |
+
+To generate strong random values:
+```bash
+# DB_PASSWORD
+openssl rand -hex 16
+
+# JWT_SECRET
+openssl rand -hex 32
 ```
-✓ your-server-hostname    self-hosted, linux, production    Idle
-```
 
-### 4. Auto-deploy on merge
+### Step 3 — Push to main to deploy
 
-From now on, every merge (or direct push) to `main` triggers the workflow and your server redeploys automatically — no SSH needed.
+Merge or push anything to `main`. The workflow will:
+1. Write `.env` on the server from GitHub Secrets
+2. Pull the latest code
+3. Run `docker compose -f docker-compose.prod.yml up -d --build`
+
+Check GitHub → **Actions** tab to watch the deploy.
 
 ---
 
-## All Options
+## What setup.sh Does
+
+```
+install git, curl, jq
+install Docker (via get.docker.com)
+clone main repo → /opt/altosec
+download GitHub Actions runner binary
+configure runner (self-hosted, linux, production)
+install runner as systemd service
+start runner
+```
+
+No `.env` is written. No initial deploy is run. Everything is driven by the GitHub workflow.
+
+---
+
+## Options
 
 ```
 Usage:
   sudo bash setup.sh [OPTIONS]
 
 Required:
-  --domain         Server public IP or domain  (e.g. 192.74.225.3 or app.example.com)
   --runner-token   GitHub Actions runner registration token
 
 Optional:
-  --backend-port   Backend API port          (default: 8080)
-  --frontend-port  Frontend HTTP port        (default: 3000)
-  --db-password    PostgreSQL password       (default: auto-generated)
-  --jwt-secret     JWT signing secret        (default: auto-generated)
-  --access-token   GitHub PAT for private repo clone (omit for public repos)
-  --deploy-dir     Application directory     (default: /opt/altosec)
-  --runner-dir     GitHub Actions runner dir (default: /opt/actions-runner)
-  --runner-name    Runner name in GitHub UI  (default: server hostname)
+  --deploy-dir     App directory             (default: /opt/altosec)
+  --runner-dir     Runner install directory  (default: /opt/actions-runner)
+  --runner-name    Runner label/name         (default: server hostname)
   --runner-version GitHub runner version     (default: 2.321.0)
   --repo-url       Main repo to clone        (default: https://github.com/altosecteam-org/Altosec-stress-tester)
+  --access-token   GitHub PAT for private repo clone
 ```
 
-### Examples
+### Multiple servers
 
-**Custom ports:**
-```bash
-sudo bash setup.sh \
-  --domain 192.74.225.3 \
-  --runner-token ABCD1234 \
-  --backend-port 9000 \
-  --frontend-port 4000
-```
+Each server needs its own runner registration token (single-use, 1-hour expiry):
 
-**Private repo with PAT:**
-```bash
-sudo bash setup.sh \
-  --domain my.server.com \
-  --runner-token ABCD1234 \
-  --access-token ghp_xxxxxxxxxxxxxxxxxxxx
-```
-
-**Multiple servers (different runner names):**
 ```bash
 # Server 1
-sudo bash setup.sh --domain 10.0.0.1 --runner-token TOKEN1 --runner-name prod-server-1
+sudo bash setup.sh --runner-token TOKEN1 --runner-name prod-server-1
 
 # Server 2
-sudo bash setup.sh --domain 10.0.0.2 --runner-token TOKEN2 --runner-name prod-server-2
+sudo bash setup.sh --runner-token TOKEN2 --runner-name prod-server-2
 ```
-> Each server needs its **own** registration token.
+
+All registered runners will receive the deploy job. To target a specific server, add a unique label and update `runs-on` in the workflow.
 
 ---
 
-## What Gets Installed
-
-| Component | Version | Location |
-|---|---|---|
-| Docker Engine | latest stable | system |
-| docker compose | v2 (bundled) | system |
-| GitHub Actions runner | 2.321.0 | `/opt/actions-runner` |
-| App (cloned repo) | latest `main` | `/opt/altosec` |
-| App config | — | `/opt/altosec/.env` |
-
----
-
-## Generated Files
-
-| File | Description |
-|---|---|
-| `/opt/altosec/.env` | Environment variables (DB password, JWT secret, ports). **Not committed to git.** |
-| `/opt/altosec/.env.production` | Copy of `.env` used by the workflow on each deploy. |
-
----
-
-## Managing the Runner Service
-
-The runner is installed as a `systemd` service. Useful commands:
+## Managing the Runner
 
 ```bash
 # Check status
@@ -159,63 +142,42 @@ sudo systemctl status actions.runner.*
 # Restart
 sudo systemctl restart actions.runner.*
 
-# View logs
+# View live logs
 sudo journalctl -u actions.runner.* -f
-
-# Stop
-sudo systemctl stop actions.runner.*
 ```
-
----
-
-## Re-running setup.sh
-
-`setup.sh` is **idempotent** for most steps:
-- Docker: skipped if already installed
-- Repo: skipped if `/opt/altosec/.git` exists
-- `.env`: skipped if file exists (delete it to regenerate)
-- Runner: re-registers (existing runner is replaced with `--replace`)
 
 ---
 
 ## Troubleshooting
 
 ### Runner shows "Offline" in GitHub
-
 ```bash
-# Restart the service
 sudo systemctl restart actions.runner.*
-
-# Check logs
 sudo journalctl -u actions.runner.* -n 50
 ```
 
-### "Token has already been used" error
+### "Token has already been used"
+Runner tokens expire after 1 hour and are single-use. Get a new token and re-run setup.sh.
 
-Runner registration tokens expire after **1 hour** and can only be used once. Get a new token from GitHub and re-run setup.sh.
+### "No runner matching labels [self-hosted, linux, production]"
+Runner is offline or not registered. Check `systemctl status` and GitHub → Settings → Actions → Runners.
 
 ### Docker permission denied
-
 ```bash
-# The 'runner' user may not be in the docker group yet
 sudo usermod -aG docker runner
 sudo systemctl restart actions.runner.*
 ```
 
-### Workflow fails: "No runner matching labels [self-hosted, linux, production]"
-
-The runner is either offline or not registered. Check:
-1. `sudo systemctl status actions.runner.*` — must be `active (running)`
-2. GitHub → Settings → Actions → Runners — must show **Idle**
+### Workflow fails: secrets are empty
+Confirm all 5 secrets are set in GitHub → Settings → Secrets → Actions. Secret names are case-sensitive.
 
 ---
 
 ## Security Notes
 
-- The `.env` file contains database credentials and JWT secrets. It is excluded from git via `.gitignore`.
-- The runner runs as the dedicated `runner` user (not root), with access to Docker via group membership.
-- Runner registration tokens are single-use and expire after 1 hour.
-- For production, use a domain with HTTPS (the app includes a reverse-proxy config for this).
+- No credentials are stored on disk between deploys. The `.env` is written at the start of each workflow run and contains only what GitHub Secrets holds.
+- The runner runs as the `runner` user (not root), with Docker group access.
+- Registration tokens are single-use and expire in 1 hour.
 
 ---
 
