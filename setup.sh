@@ -111,6 +111,11 @@ install_runner() {
 
     chown -R runner:runner "$RUNNER_DIR"
 
+    # Install .NET Core 6.0 dependencies required by the runner (libicu etc.)
+    log "Installing runner dependencies (libicu / .NET Core 6.0)..."
+    bash "$RUNNER_DIR/bin/installdependencies.sh"
+    ok "Runner dependencies installed"
+
     log "Configuring runner as '${RUNNER_NAME}'..."
     sudo -u runner bash -c "
         cd ${RUNNER_DIR}
