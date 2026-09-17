@@ -88,6 +88,14 @@ setup_repo() {
     local clone_url="$REPO_URL"
     if [[ -n "$ACCESS_TOKEN" ]]; then
         clone_url="${REPO_URL/https:\/\//https://$ACCESS_TOKEN@}"
+    else
+        # Test if repo is publicly accessible without credentials.
+        # GIT_TERMINAL_PROMPT=0 makes git fail immediately instead of hanging.
+        if ! GIT_TERMINAL_PROMPT=0 git ls-remote "$REPO_URL" &>/dev/null; then
+            err "Repo requires authentication. Re-run with --access-token <GITHUB_PAT>
+  Generate a PAT at: GitHub → Settings → Developer settings → Personal access tokens
+  Required scope: repo (read)"
+        fi
     fi
 
     if [[ -d "$DEPLOY_DIR/.git" ]]; then
@@ -101,7 +109,7 @@ setup_repo() {
     fi
 
     log "Cloning repo → $DEPLOY_DIR"
-    git clone "$clone_url" "$DEPLOY_DIR"
+    GIT_TERMINAL_PROMPT=0 git clone "$clone_url" "$DEPLOY_DIR"
     ok "Repo cloned"
 }
 
