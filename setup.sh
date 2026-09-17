@@ -14,14 +14,12 @@
 #                    → GitHub repo → Settings → Actions → Runners → New self-hosted runner
 #
 # Optional:
-#   --email          Email for Let's Encrypt expiry notices (default: admin@<domain>)
 #   --backend-port   Backend API port  (default: 8080)
 #   --frontend-port  Frontend port     (default: 3000)
 #   --runner-dir     Runner directory  (default: /opt/actions-runner)
 #   --runner-name    Runner name       (default: hostname)
 #   --runner-version GitHub runner ver (default: 2.321.0)
 #   --repo-url       Main repo URL     (default: https://github.com/altosecteam-org/Altosec-stress-tester)
-#   --skip-ssl       Skip SSL setup (useful if domain DNS is not ready yet)
 
 set -euo pipefail
 
@@ -32,24 +30,20 @@ RUNNER_VERSION="2.321.0"
 RUNNER_TOKEN=""
 RUNNER_NAME="${HOSTNAME:-$(hostname)}"
 DOMAIN=""
-EMAIL=""
 BACKEND_PORT="8080"
 FRONTEND_PORT="3000"
-SKIP_SSL="false"
 
 # ─── Argument parsing ─────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --domain)         DOMAIN="$2";         shift 2 ;;
         --runner-token)   RUNNER_TOKEN="$2";   shift 2 ;;
-        --email)          EMAIL="$2";          shift 2 ;;
         --backend-port)   BACKEND_PORT="$2";   shift 2 ;;
         --frontend-port)  FRONTEND_PORT="$2";  shift 2 ;;
         --runner-dir)     RUNNER_DIR="$2";     shift 2 ;;
         --runner-name)    RUNNER_NAME="$2";    shift 2 ;;
         --runner-version) RUNNER_VERSION="$2"; shift 2 ;;
         --repo-url)       REPO_URL="$2";       shift 2 ;;
-        --skip-ssl)       SKIP_SSL="true";     shift ;;
         *) err "Unknown argument: $1" ;;
     esac
 done
@@ -73,7 +67,7 @@ install_deps() {
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq
     # libicu: required by GitHub Actions runner (.NET Core 6.0)
-    apt-get install -y -qq git curl jq libicu-dev nginx certbot python3-certbot-nginx
+    apt-get install -y -qq git curl jq libicu-dev nginx
     ok "System dependencies ready"
 }
 
@@ -93,64 +87,13 @@ install_docker() {
 setup_nginx() {
     log "Configuring nginx reverse proxy..."
 
-    # Temporary HTTP-only config so certbot can complete the ACME challenge
     cat > /etc/nginx/sites-available/altosec << EOF
 server {
     listen 80;
     server_name ${DOMAIN};
-
-    location /.well-known/acme-challenge/ { root /var/www/html; }
-    location / { return 301 https://\$host\$request_uri; }
-}
-EOF
-
-    ln -sf /etc/nginx/sites-available/altosec /etc/nginx/sites-enabled/altosec
-    rm -f /etc/nginx/sites-enabled/default
-    nginx -t
-    systemctl enable --now nginx
-    systemctl reload nginx
-    ok "nginx HTTP config active"
-}
-
-# ─── Issue SSL certificate ────────────────────────────────────────────────────
-issue_ssl() {
-    if [[ "$SKIP_SSL" == "true" ]]; then
-        warn "Skipping SSL setup (--skip-ssl passed)"
-        return
-    fi
-
-    if [[ -f "/etc/letsencrypt/live/${DOMAIN}/fullchain.pem" ]]; then
-        ok "SSL certificate already exists for ${DOMAIN}"
-    else
-        log "Issuing SSL certificate for ${DOMAIN}..."
-        certbot certonly --nginx \
-            --non-interactive \
-            --agree-tos \
-            --email "$EMAIL" \
-            -d "$DOMAIN"
-        ok "SSL certificate issued"
-    fi
-
-    # Write full HTTPS nginx config
-    cat > /etc/nginx/sites-available/altosec << EOF
-server {
-    listen 80;
-    server_name ${DOMAIN};
-    location /.well-known/acme-challenge/ { root /var/www/html; }
-    location / { return 301 https://\$host\$request_uri; }
-}
-
-server {
-    listen 443 ssl;
-    server_name ${DOMAIN};
-
-    ssl_certificate     /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
-    ssl_protocols       TLSv1.2 TLSv1.3;
-    ssl_prefer_server_ciphers off;
 
     # SSE (Server-Sent Events) — disable buffering
-    proxy_buffering off;
+    proxy_buffering    off;
     proxy_read_timeout 3600s;
 
     location /api/ {
@@ -160,27 +103,22 @@ server {
         proxy_set_header   Host \$host;
         proxy_set_header   X-Real-IP \$remote_addr;
         proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header   X-Forwarded-Proto https;
     }
 
     location / {
         proxy_pass       http://127.0.0.1:${FRONTEND_PORT};
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-Proto https;
     }
 }
 EOF
 
+    ln -sf /etc/nginx/sites-available/altosec /etc/nginx/sites-enabled/altosec
+    rm -f /etc/nginx/sites-enabled/default
     nginx -t
+    systemctl enable --now nginx
     systemctl reload nginx
-    ok "nginx HTTPS config active"
-
-    # Auto-renewal via cron (certbot installs its own timer too, but explicit is safer)
-    if ! crontab -l 2>/dev/null | grep -q "certbot renew"; then
-        (crontab -l 2>/dev/null; echo "0 3 * * * certbot renew --quiet --nginx && systemctl reload nginx") | crontab -
-        ok "certbot auto-renewal cron installed (daily at 03:00)"
-    fi
+    ok "nginx HTTP config active (http://${DOMAIN})"
 }
 
 # ─── Register GitHub Actions self-hosted runner ───────────────────────────────
@@ -249,9 +187,7 @@ print_summary() {
     echo -e "\033[1;32m║        Altosec Stress Tester — Setup Complete                ║\033[0m"
     echo -e "\033[1;32m╚══════════════════════════════════════════════════════════════╝\033[0m"
     echo ""
-    if [[ "$SKIP_SSL" == "false" ]]; then
-        echo -e "  \033[1mURL:\033[0m     https://${DOMAIN}"
-    fi
+    echo -e "  \033[1mURL:\033[0m     http://${DOMAIN}"
     echo -e "  \033[1mRunner:\033[0m  ${RUNNER_NAME}  [self-hosted, linux, production]"
     echo ""
     echo -e "  \033[1;33mNext: add these GitHub Secrets to the main repo:\033[0m"
@@ -277,6 +213,5 @@ echo ""
 install_deps
 install_docker
 setup_nginx
-issue_ssl
 install_runner
 print_summary
