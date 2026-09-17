@@ -56,12 +56,8 @@ install_deps() {
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq
 
-    local pkgs=()
-    command -v git    &>/dev/null || pkgs+=(git)
-    command -v curl   &>/dev/null || pkgs+=(curl)
-    command -v jq     &>/dev/null || pkgs+=(jq)
-
-    [[ ${#pkgs[@]} -gt 0 ]] && apt-get install -y -qq "${pkgs[@]}"
+    # libicu is required by the GitHub Actions runner (.NET Core 6.0)
+    apt-get install -y -qq git curl jq libicu-dev
     ok "System dependencies ready"
 }
 
@@ -110,11 +106,6 @@ install_runner() {
     fi
 
     chown -R runner:runner "$RUNNER_DIR"
-
-    # Install .NET Core 6.0 dependencies required by the runner (libicu etc.)
-    log "Installing runner dependencies (libicu / .NET Core 6.0)..."
-    bash "$RUNNER_DIR/bin/installdependencies.sh"
-    ok "Runner dependencies installed"
 
     log "Configuring runner as '${RUNNER_NAME}'..."
     sudo -u runner bash -c "
