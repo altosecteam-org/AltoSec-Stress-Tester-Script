@@ -9,13 +9,10 @@
 #     | sudo bash -s -- --domain <DOMAIN> --runner-token <TOKEN> [options]
 #
 # Required:
-#   --domain         Server domain (must have DNS pointing here, e.g. app.example.com)
 #   --runner-token   GitHub Actions runner registration token
 #                    → GitHub repo → Settings → Actions → Runners → New self-hosted runner
 #
 # Optional:
-#   --backend-port   Backend API port  (default: 8080)
-#   --frontend-port  Frontend port     (default: 3000)
 #   --runner-dir     Runner directory  (default: /opt/actions-runner)
 #   --runner-name    Runner name       (default: hostname)
 #   --runner-version GitHub runner ver (default: 2.321.0)
@@ -29,17 +26,11 @@ RUNNER_DIR="/opt/actions-runner"
 RUNNER_VERSION="2.321.0"
 RUNNER_TOKEN=""
 RUNNER_NAME="${HOSTNAME:-$(hostname)}"
-DOMAIN=""
-BACKEND_PORT="8080"
-FRONTEND_PORT="3000"
 
 # ─── Argument parsing ─────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --domain)         DOMAIN="$2";         shift 2 ;;
         --runner-token)   RUNNER_TOKEN="$2";   shift 2 ;;
-        --backend-port)   BACKEND_PORT="$2";   shift 2 ;;
-        --frontend-port)  FRONTEND_PORT="$2";  shift 2 ;;
         --runner-dir)     RUNNER_DIR="$2";     shift 2 ;;
         --runner-name)    RUNNER_NAME="$2";    shift 2 ;;
         --runner-version) RUNNER_VERSION="$2"; shift 2 ;;
@@ -57,9 +48,6 @@ warn() { echo -e "\033[1;33m[setup] WARN:\033[0m $*"; }
 # ─── Validation ───────────────────────────────────────────────────────────────
 [[ "$(id -u)" -eq 0 ]]   || err "Run as root: sudo bash setup.sh ..."
 [[ -z "$RUNNER_TOKEN" ]] && err "--runner-token is required"
-[[ -z "$DOMAIN" ]]       && err "--domain is required"
-
-[[ -z "$EMAIL" ]] && EMAIL="admin@${DOMAIN}"
 
 # ─── Install system dependencies ──────────────────────────────────────────────
 install_deps() {
@@ -67,7 +55,7 @@ install_deps() {
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq
     # libicu: required by GitHub Actions runner (.NET Core 6.0)
-    apt-get install -y -qq git curl jq libicu-dev nginx
+    apt-get install -y -qq git curl jq libicu-dev
     ok "System dependencies ready"
 }
 
@@ -81,44 +69,6 @@ install_docker() {
     curl -fsSL https://get.docker.com | sh
     systemctl enable --now docker
     ok "Docker installed: $(docker --version)"
-}
-
-# ─── Configure nginx reverse proxy ────────────────────────────────────────────
-setup_nginx() {
-    log "Configuring nginx reverse proxy..."
-
-    cat > /etc/nginx/sites-available/altosec << EOF
-server {
-    listen 80;
-    server_name ${DOMAIN};
-
-    # SSE (Server-Sent Events) — disable buffering
-    proxy_buffering    off;
-    proxy_read_timeout 3600s;
-
-    location /api/ {
-        proxy_pass         http://127.0.0.1:${BACKEND_PORT};
-        proxy_http_version 1.1;
-        proxy_set_header   Connection '';
-        proxy_set_header   Host \$host;
-        proxy_set_header   X-Real-IP \$remote_addr;
-        proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
-    }
-
-    location / {
-        proxy_pass       http://127.0.0.1:${FRONTEND_PORT};
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-    }
-}
-EOF
-
-    ln -sf /etc/nginx/sites-available/altosec /etc/nginx/sites-enabled/altosec
-    rm -f /etc/nginx/sites-enabled/default
-    nginx -t
-    systemctl enable --now nginx
-    systemctl reload nginx
-    ok "nginx HTTP config active (http://${DOMAIN})"
 }
 
 # ─── Register GitHub Actions self-hosted runner ───────────────────────────────
@@ -187,7 +137,6 @@ print_summary() {
     echo -e "\033[1;32m║        Altosec Stress Tester — Setup Complete                ║\033[0m"
     echo -e "\033[1;32m╚══════════════════════════════════════════════════════════════╝\033[0m"
     echo ""
-    echo -e "  \033[1mURL:\033[0m     http://${DOMAIN}"
     echo -e "  \033[1mRunner:\033[0m  ${RUNNER_NAME}  [self-hosted, linux, production]"
     echo ""
     echo -e "  \033[1;33mNext: add these GitHub Secrets to the main repo:\033[0m"
@@ -206,12 +155,10 @@ print_summary() {
 # ─── Main ─────────────────────────────────────────────────────────────────────
 echo ""
 log "=== Altosec Stress Tester — Server Provisioning ==="
-log "Domain      : $DOMAIN"
 log "Runner name : $RUNNER_NAME"
 echo ""
 
 install_deps
 install_docker
-setup_nginx
 install_runner
 print_summary
