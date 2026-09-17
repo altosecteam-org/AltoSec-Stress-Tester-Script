@@ -14,34 +14,28 @@
 #                    → GitHub repo → Settings → Actions → Runners → New self-hosted runner → copy token
 #
 # Optional:
-#   --deploy-dir     App directory             (default: /opt/altosec)
 #   --runner-dir     Runner install directory  (default: /opt/actions-runner)
 #   --runner-name    Runner label/name         (default: hostname)
 #   --runner-version GitHub Actions runner ver (default: 2.321.0)
-#   --repo-url       Main repo to clone        (default: https://github.com/altosecteam-org/Altosec-stress-tester)
-#   --access-token   GitHub PAT for private repo clone (omit for public repos)
+#   --repo-url       Main repo URL             (default: https://github.com/altosecteam-org/Altosec-stress-tester)
 
 set -euo pipefail
 
 # ─── Defaults ─────────────────────────────────────────────────────────────────
 REPO_URL="https://github.com/altosecteam-org/Altosec-stress-tester"
-DEPLOY_DIR="/opt/altosec"
 RUNNER_DIR="/opt/actions-runner"
 RUNNER_VERSION="2.321.0"
 RUNNER_TOKEN=""
 RUNNER_NAME="${HOSTNAME:-$(hostname)}"
-ACCESS_TOKEN=""
 
 # ─── Argument parsing ─────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --runner-token)   RUNNER_TOKEN="$2";   shift 2 ;;
-        --deploy-dir)     DEPLOY_DIR="$2";     shift 2 ;;
         --runner-dir)     RUNNER_DIR="$2";     shift 2 ;;
         --runner-name)    RUNNER_NAME="$2";    shift 2 ;;
         --runner-version) RUNNER_VERSION="$2"; shift 2 ;;
         --repo-url)       REPO_URL="$2";       shift 2 ;;
-        --access-token)   ACCESS_TOKEN="$2";   shift 2 ;;
         *) err "Unknown argument: $1" ;;
     esac
 done
@@ -81,36 +75,6 @@ install_docker() {
     curl -fsSL https://get.docker.com | sh
     systemctl enable --now docker
     ok "Docker installed: $(docker --version)"
-}
-
-# ─── Clone repo (for the runner to work from) ─────────────────────────────────
-setup_repo() {
-    local clone_url="$REPO_URL"
-    if [[ -n "$ACCESS_TOKEN" ]]; then
-        clone_url="${REPO_URL/https:\/\//https://$ACCESS_TOKEN@}"
-    else
-        # Test if repo is publicly accessible without credentials.
-        # GIT_TERMINAL_PROMPT=0 makes git fail immediately instead of hanging.
-        if ! GIT_TERMINAL_PROMPT=0 git ls-remote "$REPO_URL" &>/dev/null; then
-            err "Repo requires authentication. Re-run with --access-token <GITHUB_PAT>
-  Generate a PAT at: GitHub → Settings → Developer settings → Personal access tokens
-  Required scope: repo (read)"
-        fi
-    fi
-
-    if [[ -d "$DEPLOY_DIR/.git" ]]; then
-        ok "Repo already present at $DEPLOY_DIR"
-        return
-    fi
-
-    if [[ -d "$DEPLOY_DIR" ]] && [[ -n "$(ls -A "$DEPLOY_DIR" 2>/dev/null)" ]]; then
-        warn "$DEPLOY_DIR exists but is not a git repo — moving to ${DEPLOY_DIR}.bak"
-        mv "$DEPLOY_DIR" "${DEPLOY_DIR}.bak"
-    fi
-
-    log "Cloning repo → $DEPLOY_DIR"
-    GIT_TERMINAL_PROMPT=0 git clone "$clone_url" "$DEPLOY_DIR"
-    ok "Repo cloned"
 }
 
 # ─── Register GitHub Actions self-hosted runner ───────────────────────────────
@@ -194,12 +158,10 @@ print_summary() {
 echo ""
 log "=== Altosec Stress Tester — Server Provisioning ==="
 log "Runner name : $RUNNER_NAME"
-log "Deploy dir  : $DEPLOY_DIR"
 log "Runner dir  : $RUNNER_DIR"
 echo ""
 
 install_deps
 install_docker
-setup_repo
 install_runner
 print_summary
